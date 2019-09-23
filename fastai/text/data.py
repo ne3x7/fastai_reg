@@ -302,6 +302,19 @@ class GenLearnDataBunch(TextDataBunch):
         dls = [DataLoader(d, b, shuffle=False, **dl_kwargs) for d,b in zip(datasets, (bs,val_bs,val_bs,val_bs)) if d is not None]
         return cls(*dls, path=path, device=device, dl_tfms=dl_tfms, collate_fn=collate_fn, no_check=no_check)
 
+class PhysGenLearnDataBunch(TextDataBunch):
+    "Create a `TextDataBunch` suitable for training a language model."
+    @classmethod
+    def create(cls, train_ds, valid_ds, test_ds=None, path:PathOrStr='.', no_check:bool=False, bs=64, val_bs:int=None,
+               num_workers:int=0, device:torch.device=None, collate_fn:Callable=data_collate,
+               dl_tfms:Optional[Collection[Callable]]=None, bptt:int=70, backwards:bool=False, **dl_kwargs) -> DataBunch:
+        "Create a `TextDataBunch` in `path` from the `datasets` for language modelling. Passes `**dl_kwargs` on to `DataLoader()`"
+        datasets = cls._init_ds(train_ds, valid_ds, test_ds)
+        val_bs = ifnone(val_bs, bs)
+        dls = [DataLoader(d, (bs if i==0 else val_bs), shuffle=(i==0), **dl_kwargs) \
+        for i,(d,b) in enumerate(zip(datasets, (bs,val_bs,val_bs,val_bs))) if d is not None]
+        return cls(*dls, path=path, device=device, dl_tfms=dl_tfms, collate_fn=collate_fn, no_check=no_check)
+
 class TextClasDataBunch(TextDataBunch):
     "Create a `TextDataBunch` suitable for training an RNN classifier."
     @classmethod
