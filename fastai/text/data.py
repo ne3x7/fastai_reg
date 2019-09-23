@@ -8,7 +8,8 @@ from ..callback import Callback
 
 __all__ = ['LanguageModelPreLoader', 'SortSampler', 'SortishSampler', 'TextList', 'pad_collate', 'TextDataBunch',
            'TextLMDataBunch', 'TextClasDataBunch', 'Text', 'open_text', 'TokenizeProcessor', 'NumericalizeProcessor',
-           'OpenFileProcessor', 'LMLabelList', 'LMTextList', 'SPProcessor', 'GeneratorModelPreLoader', 'GenLearnDataBunch']
+           'OpenFileProcessor', 'LMLabelList', 'LMTextList', 'SPProcessor', 'GeneratorModelPreLoader', 'GenLearnDataBunch',
+           'PhysGenLearnDataBunch']
 
 TextMtd = IntEnum('TextMtd', 'DF TOK IDS')
 text_extensions = {'.txt'}
