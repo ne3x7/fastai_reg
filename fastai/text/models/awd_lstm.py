@@ -6,9 +6,9 @@ from ...basic_data import *
 from ..data import TextClasDataBunch
 import matplotlib.cm as cm
 
-__all__ = ['EmbeddingDropout', 'LinearDecoder', 'AWD_LSTM', 'RNNDropout',
-           'SequentialRNN', 'WeightDropout', 'dropout_mask', 'awd_lstm_lm_split', 'awd_lstm_clas_split',
-           'awd_lstm_lm_config', 'awd_lstm_clas_config', 'TextClassificationInterpretation']
+__all__ = ['EmbeddingDropout', 'LinearDecoder', 'AWD_LSTM', 'RAWD_LSTM', 'RNNDropout',
+           'SequentialRNN', 'WeightDropout', 'dropout_mask', 'awd_lstm_lm_split', 'awd_lstm_clas_split', 'rawd_lstm_split',
+           'awd_lstm_lm_config', 'awd_lstm_clas_config', 'rawd_lstm_config', 'TextClassificationInterpretation']
 
 def dropout_mask(x:Tensor, sz:Collection[int], p:float):
     "Return a dropout mask of the same type as `x`, size `sz`, with probability `p` to cancel an element."
@@ -133,6 +133,63 @@ class AWD_LSTM(Module):
         if self.qrnn: self.hidden = [self._one_hidden(l) for l in range(self.n_layers)]
         else: self.hidden = [(self._one_hidden(l), self._one_hidden(l)) for l in range(self.n_layers)]
 
+class RAWD_LSTM(Module):
+    "Regression version of AWD-LSTM/QRNN inspired by https://arxiv.org/abs/1708.02182."
+
+    initrange=0.1
+
+    def __init__(self, emb_sz:int, n_hid:int, n_layers:int, hidden_p:float=0.2,
+                 input_p:float=0.6, weight_p:float=0.5, qrnn:bool=False, bidir:bool=False):
+        self.bs,self.qrnn,self.emb_sz,self.n_hid,self.n_layers = 1,qrnn,emb_sz,n_hid,n_layers
+        self.n_dir = 2 if bidir else 1
+        if self.qrnn:
+            #Using QRNN requires an installation of cuda
+            from .qrnn import QRNN
+            self.rnns = [QRNN(emb_sz if l == 0 else n_hid, (n_hid if l != n_layers - 1 else emb_sz)//self.n_dir, 1,
+                              save_prev_x=True, zoneout=0, window=2 if l == 0 else 1, output_gate=True, bidirectional=bidir) 
+                         for l in range(n_layers)]
+            for rnn in self.rnns: 
+                rnn.layers[0].linear = WeightDropout(rnn.layers[0].linear, weight_p, layer_names=['weight'])
+        else:
+            self.rnns = [nn.LSTM(emb_sz if l == 0 else n_hid, (n_hid if l != n_layers - 1 else emb_sz)//self.n_dir, 1,
+                                 batch_first=True, bidirectional=bidir) for l in range(n_layers)]
+            self.rnns = [WeightDropout(rnn, weight_p) for rnn in self.rnns]
+        self.rnns = nn.ModuleList(self.rnns)
+        self.input_dp = RNNDropout(input_p)
+        self.hidden_dps = nn.ModuleList([RNNDropout(hidden_p) for l in range(n_layers)])
+
+    def forward(self, input:Tensor)->Tuple[Tensor,Tensor]:
+        bs,sl,nvars = input.size()
+        if bs!=self.bs:
+            self.bs=bs
+            self.reset()
+        raw_output = self.input_dp(input)
+        new_hidden,raw_outputs,outputs = [],[],[]
+        for l, (rnn,hid_dp) in enumerate(zip(self.rnns, self.hidden_dps)):
+            raw_output, new_h = rnn(raw_output, self.hidden[l])
+            new_hidden.append(new_h)
+            raw_outputs.append(raw_output)
+            if l != self.n_layers - 1: raw_output = hid_dp(raw_output)
+            outputs.append(raw_output)
+        self.hidden = to_detach(new_hidden, cpu=False)
+        return raw_outputs, outputs
+
+    def _one_hidden(self, l:int)->Tensor:
+        "Return one hidden state."
+        nh = (self.n_hid if l != self.n_layers - 1 else self.emb_sz) // self.n_dir
+        return one_param(self).new(self.n_dir, self.bs, nh).zero_()
+
+    def select_hidden(self, idxs):
+        if self.qrnn: self.hidden = [h[:,idxs,:] for h in self.hidden]
+        else: self.hidden = [(h[0][:,idxs,:],h[1][:,idxs,:]) for h in self.hidden]
+        self.bs = len(idxs)
+
+    def reset(self):
+        "Reset the hidden states."
+        [r.reset() for r in self.rnns if hasattr(r, 'reset')]
+        if self.qrnn: self.hidden = [self._one_hidden(l) for l in range(self.n_layers)]
+        else: self.hidden = [(self._one_hidden(l), self._one_hidden(l)) for l in range(self.n_layers)]
+
 class LinearDecoder(Module):
     "To go on top of a RNNCore module and create a Language Model."
     initrange=0.1
@@ -167,11 +224,19 @@ def awd_lstm_clas_split(model:nn.Module) -> List[nn.Module]:
     groups += [[rnn, dp] for rnn, dp in zip(model[0].module.rnns, model[0].module.hidden_dps)]
     return groups + [[model[1]]]
 
+def rawd_lstm_split(model:nn.Module) -> List[nn.Module]:
+    "Split a RNN `model` in groups for differential learning rates."
+    groups = [[rnn, dp] for rnn, dp in zip(model[0].rnns, model[0].hidden_dps)]
+    return groups + [[model[1]]]
+
 awd_lstm_lm_config = dict(emb_sz=400, n_hid=1152, n_layers=3, pad_token=1, qrnn=False, bidir=False, output_p=0.1,
                           hidden_p=0.15, input_p=0.25, embed_p=0.02, weight_p=0.2, tie_weights=True, out_bias=True)
 
 awd_lstm_clas_config = dict(emb_sz=400, n_hid=1152, n_layers=3, pad_token=1, qrnn=False, bidir=False, output_p=0.4,
                        hidden_p=0.3, input_p=0.4, embed_p=0.05, weight_p=0.5)
+
+rawd_lstm_config = dict(emb_sz=2, n_hid=100, n_layers=3, qrnn=False, bidir=False, output_p=0.05,
+                          hidden_p=0.05, input_p=0.05, weight_p=0.1, out_bias=True)
 
 def value2rgba(x:float, cmap:Callable=cm.RdYlGn, alpha_mult:float=1.0)->Tuple:
     "Convert a value `x` from 0 to 1 (inclusive) to an RGBA tuple according to `cmap` times transparency `alpha_mult`."

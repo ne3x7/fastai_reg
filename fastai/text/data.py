@@ -8,7 +8,7 @@ from ..callback import Callback
 
 __all__ = ['LanguageModelPreLoader', 'SortSampler', 'SortishSampler', 'TextList', 'pad_collate', 'TextDataBunch',
            'TextLMDataBunch', 'TextClasDataBunch', 'Text', 'open_text', 'TokenizeProcessor', 'NumericalizeProcessor',
-           'OpenFileProcessor', 'LMLabelList', 'LMTextList', 'SPProcessor']
+           'OpenFileProcessor', 'LMLabelList', 'LMTextList', 'SPProcessor', 'GeneratorModelPreLoader', 'GenLearnDataBunch']
 
 TextMtd = IntEnum('TextMtd', 'DF TOK IDS')
 text_extensions = {'.txt'}
@@ -92,6 +92,41 @@ class LanguageModelPreLoader(Callback):
             else:
                 ri = lengths[ix] if ibuf else ri
                 n  = min(ri, row.size - ibuf)
+                row[ibuf:ibuf+n] = rag[ri-n:ri][::-1]
+            ibuf += n
+        return ro, ri + ((n-overlap) if forward else -(n-overlap))
+
+class GeneratorModelPreLoader(LanguageModelPreLoader):
+    def __init__(self, hidden_size, dataset, **kwargs):
+        self.hidden_size = hidden_size
+        super().__init__(dataset, **kwargs)
+
+    def allocate_buffers(self):
+        "Create the ragged array that will be filled when we ask for items."
+        if self.ite_len is None: len(self)
+        self.idx   = LanguageModelPreLoader.CircularIndex(len(self.dataset.x.items), not self.backwards)
+        self.batch = np.zeros((self.bs, self.bptt+1, self.hidden_size), dtype=np.float32)
+        self.batch_x, self.batch_y = self.batch[:,0:self.bptt], self.batch[:,1:self.bptt+1]
+        #ro: index of the text we're at inside our datasets for the various batches
+        self.ro    = np.zeros(self.bs, dtype=np.int64)
+        #ri: index of the token we're at inside our current text for the various batches
+        self.ri    = np.zeros(self.bs, dtype=np.int)
+
+    def fill_row(self, forward, items, idx, row, ro, ri, overlap,lengths):
+        "Fill the row with tokens from the ragged array. --OBS-- overlap != 1 has not been implemented"
+        ibuf = n = 0
+        ro  -= 1
+        while ibuf < np.prod(row.shape[:-1]):
+            ro   += 1
+            ix    = idx[ro]
+            rag   = items[ix]
+            if forward:
+                ri = 0 if ibuf else ri
+                n  = min(lengths[ix] - ri, np.prod(row.shape[:-1]) - ibuf)
+                row[ibuf:ibuf+n] = rag[ri:ri+n]
+            else:
+                ri = lengths[ix] if ibuf else ri
+                n  = min(ri, np.prod(row.shape[:-1]) - ibuf)
                 row[ibuf:ibuf+n] = rag[ri-n:ri][::-1]
             ibuf += n
         return ro, ri + ((n-overlap) if forward else -(n-overlap))
@@ -247,6 +282,21 @@ class TextLMDataBunch(TextDataBunch):
         datasets = cls._init_ds(train_ds, valid_ds, test_ds)
         val_bs = ifnone(val_bs, bs)
         datasets = [LanguageModelPreLoader(ds, shuffle=(i==0), bs=(bs if i==0 else val_bs), bptt=bptt, backwards=backwards)
+                    for i,ds in enumerate(datasets)]
+        val_bs = bs
+        dls = [DataLoader(d, b, shuffle=False, **dl_kwargs) for d,b in zip(datasets, (bs,val_bs,val_bs,val_bs)) if d is not None]
+        return cls(*dls, path=path, device=device, dl_tfms=dl_tfms, collate_fn=collate_fn, no_check=no_check)
+
+class GenLearnDataBunch(TextDataBunch):
+    "Create a `TextDataBunch` suitable for training a language model."
+    @classmethod
+    def create(cls, train_ds, valid_ds, test_ds=None, path:PathOrStr='.', no_check:bool=False, bs=64, val_bs:int=None,
+               num_workers:int=0, device:torch.device=None, collate_fn:Callable=data_collate,
+               dl_tfms:Optional[Collection[Callable]]=None, bptt:int=70, backwards:bool=False, **dl_kwargs) -> DataBunch:
+        "Create a `TextDataBunch` in `path` from the `datasets` for language modelling. Passes `**dl_kwargs` on to `DataLoader()`"
+        datasets = cls._init_ds(train_ds, valid_ds, test_ds)
+        val_bs = ifnone(val_bs, bs)
+        datasets = [GeneratorModelPreLoader(2, ds, shuffle=(i==0), bs=(bs if i==0 else val_bs), bptt=bptt, backwards=backwards)
                     for i,ds in enumerate(datasets)]
         val_bs = bs
         dls = [DataLoader(d, b, shuffle=False, **dl_kwargs) for d,b in zip(datasets, (bs,val_bs,val_bs,val_bs)) if d is not None]

@@ -12,12 +12,14 @@ from .models import *
 from .transform import *
 from .data import *
 
-__all__ = ['RNNLearner', 'LanguageLearner', 'convert_weights', 'decode_spec_tokens', 'get_language_model', 'language_model_learner',
+__all__ = ['RNNLearner', 'LanguageLearner', 'convert_weights', 'decode_spec_tokens', 'get_language_model',
+           'language_model_learner', 'get_generator_model', 'generator_model_learner',
            'MultiBatchEncoder', 'get_text_classifier', 'text_classifier_learner', 'PoolingLinearClassifier']
 
 _model_meta = {AWD_LSTM: {'hid_name':'emb_sz', 'url':URLs.WT103_FWD, 'url_bwd':URLs.WT103_BWD,
                           'config_lm':awd_lstm_lm_config, 'split_lm': awd_lstm_lm_split,
                           'config_clas':awd_lstm_clas_config, 'split_clas': awd_lstm_clas_split},
+               RAWD_LSTM: {'hid_name':'emb_sz', 'config':rawd_lstm_config, 'split': rawd_lstm_split},
                Transformer: {'hid_name':'d_model', 'url':URLs.OPENAI_TRANSFORMER,
                              'config_lm':tfmer_lm_config, 'split_lm': tfmer_lm_split,
                              'config_clas':tfmer_clas_config, 'split_clas': tfmer_clas_split},
@@ -198,6 +200,19 @@ def get_language_model(arch:Callable, vocab_sz:int, config:dict=None, drop_mult:
     model = SequentialRNN(encoder, decoder)
     return model if init is None else model.apply(init)
 
+def get_generator_model(arch:Callable, config:dict=None, drop_mult:float=1.):
+    "Create a generator model from `arch` and its `config`, maybe `pretrained`."
+    meta = _model_meta[arch]
+    config = ifnone(config, meta['config']).copy()
+    for k in config.keys():
+        if k.endswith('_p'): config[k] *= drop_mult
+    output_p,out_bias = map(config.pop, ['output_p', 'out_bias'])
+    init = config.pop('init') if 'init' in config else None
+    encoder = arch(**config)
+    decoder = LinearDecoder(config[meta['hid_name']], config[meta['hid_name']], output_p, tie_encoder=None, bias=out_bias)
+    model = SequentialRNN(encoder, decoder)
+    return model if init is None else model.apply(init)
+
 def language_model_learner(data:DataBunch, arch, config:dict=None, drop_mult:float=1., pretrained:bool=True,
                            pretrained_fnames:OptStrTuple=None, **learn_kwargs) -> 'LanguageLearner':
     "Create a `Learner` with a language model from `data` and `arch`."
@@ -216,6 +231,12 @@ def language_model_learner(data:DataBunch, arch, config:dict=None, drop_mult:flo
             fnames = [list(model_path.glob(f'*.{ext}'))[0] for ext in ['pth', 'pkl']]
         learn = learn.load_pretrained(*fnames)
         learn.freeze()
+    return learn
+
+def generator_model_learner(data:DataBunch, arch, config:dict=None, drop_mult:float=1., **learn_kwargs) -> 'RNNLearner':
+    model = get_generator_model(arch, config=config, drop_mult=drop_mult)
+    meta = _model_meta[arch]
+    learn = RNNLearner(data, model, split_func=meta['split'], **learn_kwargs)
     return learn
 
 def masked_concat_pool(outputs, mask):
