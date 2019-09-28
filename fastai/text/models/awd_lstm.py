@@ -235,8 +235,8 @@ awd_lstm_lm_config = dict(emb_sz=400, n_hid=1152, n_layers=3, pad_token=1, qrnn=
 awd_lstm_clas_config = dict(emb_sz=400, n_hid=1152, n_layers=3, pad_token=1, qrnn=False, bidir=False, output_p=0.4,
                        hidden_p=0.3, input_p=0.4, embed_p=0.05, weight_p=0.5)
 
-rawd_lstm_config = dict(emb_sz=2, n_hid=100, n_layers=3, qrnn=False, bidir=False, output_p=0.05,
-                          hidden_p=0.05, input_p=0.05, weight_p=0.1, out_bias=True)
+rawd_lstm_config = dict(emb_sz=2, n_hid=100, n_layers=3, qrnn=False, bidir=False, output_p=0.1,
+                          hidden_p=0.15, input_p=0.25, weight_p=0.2, out_bias=True)
 
 def value2rgba(x:float, cmap:Callable=cm.RdYlGn, alpha_mult:float=1.0)->Tuple:
     "Convert a value `x` from 0 to 1 (inclusive) to an RGBA tuple according to `cmap` times transparency `alpha_mult`."
